@@ -1,5 +1,15 @@
 <?php
 require 'config.php';
+require_once 'csrf_utils.php';
+require_once 'rate_limiting.php';
+
+// Kontrola rate limitu
+$rateLimiter = new RateLimiter($pdo, 'registration_view', 30, 3600); // 30 zobrazení za hodinu
+if (!$rateLimiter->check()) {
+    $remainingTime = $rateLimiter->getRemainingTime();
+    $minutes = ceil($remainingTime / 60);
+    die("Prekročili ste povolený počet zobrazení registračného formulára. Skúste to prosím znova o $minutes minút.");
+}
 
 // Získanie typu registrácie z URL, default "taborujuci"
 $linkType = isset($_GET['type']) ? $_GET['type'] : 'taborujuci';
@@ -90,8 +100,9 @@ $queryFridayActivities = $pdo->query("
   <script src="script.js" defer></script>
 </head>
 <body>
-  <!-- Udržujeme parameter type v action URL -->
+  <!-- Udržujeme parameter type v action URL a pridávame CSRF token -->
   <form action="process_registration.php?type=<?= urlencode($linkType) ?>" method="POST">
+      <?= csrfField() ?>
       <h1>Registrácia - <?= htmlspecialchars(ucfirst($linkType)) ?></h1>
 
       <label for="meno">Meno:</label>
@@ -188,7 +199,6 @@ function toggleOtherAllergy() {
     }
 }
 </script>
-      <input type="text" id="alergie_other" name="alergie_other" style="display:none;" placeholder="Špecifikujte">
 
       <label for="gdpr">Súhlasím so spracovaním osobných údajov:</label>
       <input type="checkbox" id="gdpr" name="gdpr" required>
