@@ -1,7 +1,13 @@
 <?php
-require 'config.php';
-require_once 'csrf_utils.php';
-require_once 'rate_limiting.php';
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/error.log');
+
+require_once __DIR__ . '/includes/config.php';
+require_once __DIR__ . '/includes/csrf_utils.php';
+require_once __DIR__ . '/includes/rate_limiter.php';
 
 // Kontrola rate limitu
 $rateLimiter = new RateLimiter($pdo, 'registration_view', 30, 3600); // 30 zobrazení za hodinu

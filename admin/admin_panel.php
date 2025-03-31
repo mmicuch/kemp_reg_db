@@ -1,19 +1,28 @@
 // admin_panel.php
 <?php
-require 'config.php';
+require_once __DIR__ . '/../includes/config.php';
+require_once __DIR__ . '/../includes/csrf_utils.php';
 session_start();
 
-// Jednoduchá autentifikácia
-if (!isset($_SESSION['admin']) && (!isset($_POST['username']) || !isset($_POST['password']))) {
-    // Zobraz login formulár
-    include 'admin_login.php';
-    exit;
-} elseif (!isset($_SESSION['admin']) && isset($_POST['username']) && isset($_POST['password'])) {
-    // Skontroluj login údaje (v reálnom prostredí použite bezpečnejšie metódy)
-    if ($_POST['username'] === 'admin' && $_POST['password'] === 'secure_password') {
-        $_SESSION['admin'] = true;
+// Kontrola prihlásenia
+if (!isset($_SESSION['admin'])) {
+    if (isset($_POST['username']) && isset($_POST['password'])) {
+        $username = $_POST['username'];
+        $password = $_POST['password'];
+        
+        // Kontrola prihlasovacích údajov v databáze
+        $stmt = $pdo->prepare("SELECT * FROM admin_users WHERE username = ?");
+        $stmt->execute([$username]);
+        $user = $stmt->fetch();
+        
+        if ($user && password_verify($password, $user['password'])) {
+            $_SESSION['admin'] = true;
+            $_SESSION['admin_id'] = $user['id'];
+        } else {
+            die("Nesprávne prihlasovacie údaje");
+        }
     } else {
-        include 'admin_login.php';
+        header('Location: admin_login.php');
         exit;
     }
 }

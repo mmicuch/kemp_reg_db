@@ -1,5 +1,16 @@
 <?php
 require 'config.php';
+require_once 'csrf_utils.php';
+require_once 'validation.php';
+require_once 'rate_limiting.php';
+
+// Kontrola rate limitu
+$rateLimiter = new RateLimiter($pdo, 'registration_submit', 5, 3600); // 5 registrácií za hodinu
+if (!$rateLimiter->check()) {
+    $remainingTime = $rateLimiter->getRemainingTime();
+    $minutes = ceil($remainingTime / 60);
+    die("Prekročili ste povolený počet registrácií. Skúste to prosím znova o $minutes minút.");
+}
 
 // Získanie typu registrácie z URL, default "taborujuci"
 $linkType = isset($_GET['type']) ? $_GET['type'] : 'taborujuci';
@@ -9,28 +20,49 @@ if (!in_array($linkType, $allowedTypes)) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Načítanie údajov z formulára
-    $meno            = $_POST['meno'] ?? '';
-    $priezvisko      = $_POST['priezvisko'] ?? '';
-    $datum_narodenia = $_POST['datum_narodenia'] ?? '';
-    $pohlavie       = $_POST['pohlavie'] ?? '';
-    $ubytovanie     = $_POST['ubytovanie'] ?? '';
-    $mladez         = $_POST['mladez'] ?? '';
-    $poznamka       = $_POST['poznamka'] ?? '';
-    $mail           = $_POST['mail'] ?? '';
-    $novy           = isset($_POST['novy']) ? 1 : 0;
-    $gdpr           = isset($_POST['gdpr']) ? 1 : 0;
-    $aktivity_streda  = $_POST['aktivity_streda'] ?? '';
-    $aktivity_stvrtok = $_POST['aktivity_stvrtok'] ?? '';
-    $aktivity_piatok  = $_POST['aktivity_piatok'] ?? '';
-    $alergie         = $_POST['alergie'] ?? [];
-    $alergie_other   = $_POST['alergie_other'] ?? '';
-
-    if (!$meno || !$priezvisko || !$datum_narodenia || !$pohlavie || !$ubytovanie || !$mladez || !$mail || !$gdpr) {
-        die("Niektoré povinné údaje chýbajú.");
+    // Kontrola CSRF tokenu
+    if (!isset($_POST['csrf_token']) || !validateCsrfToken($_POST['csrf_token'])) {
+        die("Neplatný alebo chýbajúci CSRF token. Skúste obnoviť stránku a skúste to znova.");
     }
+    
+    // Sanitizácia a získanie údajov z formulára
+    $data = sanitizeData($_POST);
+    
+    // Validácia údajov
+    $errors = validateBasicData($data);
+    
+    if (!empty($errors)) {
+        echo "<h2>Chyby pri validácii:</h2>";
+        echo "<ul>";
+        foreach ($errors as $error) {
+            echo "<li>" . htmlspecialchars($error) . "</li>";
+        }
+        echo "</ul>";
+        echo "<p><a href='javascript:history.back()'>Vrátiť sa späť</a></p>";
+        exit;
+    }
+    
+    // Načítanie údajov z formulára
+    $meno            = $data['meno'] ?? '';
+    $priezvisko      = $data['priezvisko'] ?? '';
+    $datum_narodenia = $data['datum_narodenia'] ?? '';
+    $pohlavie        = $data['pohlavie'] ?? '';
+    $ubytovanie      = $data['ubytovanie'] ?? '';
+    $mladez          = $data['mladez'] ?? '';
+    $poznamka        = $data['poznamka'] ?? '';
+    $mail            = $data['mail'] ?? '';
+    $novy            = isset($data['novy']) ? 1 : 0;
+    $gdpr            = isset($data['gdpr']) ? 1 : 0;
+    $aktivity_streda  = $data['aktivity_streda'] ?? '';
+    $aktivity_stvrtok = $data['aktivity_stvrtok'] ?? '';
+    $aktivity_piatok  = $data['aktivity_piatok'] ?? '';
+    $alergie          = $data['alergie'] ?? [];
+    $alergie_other    = $data['alergie_other'] ?? '';
 
     try {
+        // Začiatok transakcie
+        $pdo->beginTransaction();
+        
         // Vloženie údajov do tabuľky os_udaje
         $stmt = $pdo->prepare("
             INSERT INTO os_udaje 
@@ -40,6 +72,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$meno, $priezvisko, $datum_narodenia, $pohlavie, $mladez, $poznamka, $mail, $novy, $gdpr, $linkType]);
         $os_udaje_id = $pdo->lastInsertId();
 
+        // Kontrola, či ubytovanie ešte má voľné miesta
+        $stmt = $pdo->prepare("
+            SELECT kapacita - (
+                SELECT COUNT(*) FROM os_udaje_ubytovanie 
+                WHERE ubytovanie_id = ?
+            ) AS volne_miesta
+            FROM ubytovanie
+            WHERE id = ?
+        ");
+        $stmt->execute([$ubytovanie, $ubytovanie]);
+        $capacity = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($capacity['volne_miesta'] <= 0) {
+            throw new Exception("Vybrané ubytovanie je už plné. Prosím, vyberte iné ubytovanie.");
+        }
+
         // Uloženie údajov o ubytovaní
         $stmt = $pdo->prepare("
             INSERT INTO os_udaje_ubytovanie (os_udaje_id, ubytovanie_id)
@@ -48,96 +96,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$os_udaje_id, $ubytovanie]);
 
         // Uloženie aktivít
-        $activities = [$aktivity_streda, $aktivity_stvrtok, $aktivity_piatok];
-        foreach ($activities as $activity) {
-            if ($activity) {
-                $stmt = $pdo->prepare("INSERT INTO os_udaje_aktivity (os_udaje_id, aktivita_id) VALUES (?, ?)");
-                $stmt->execute([$os_udaje_id, $activity]);
+        $stmt = $pdo->prepare("
+            INSERT INTO os_udaje_aktivity (os_udaje_id, aktivita_id)
+            VALUES (?, ?)
+        ");
+
+        foreach ([$aktivity_streda, $aktivity_stvrtok, $aktivity_piatok] as $aktivita) {
+            if ($aktivita) {
+                $stmt->execute([$os_udaje_id, $aktivita]);
             }
         }
 
         // Uloženie alergií
-        if (in_array('none', $alergie)) {
-            // Ak užívateľ zvolil "Žiadne", ignorujeme ostatné voľby
-        } else {
-            foreach ($alergie as $allergy) {
-                if ($allergy === 'other') {
+        if (!in_array('none', $alergie)) {
+            $stmt = $pdo->prepare("
+                INSERT INTO os_udaje_alergie (os_udaje_id, alergie_id)
+                VALUES (?, ?)
+            ");
+
+            foreach ($alergie as $alergia) {
+                if ($alergia === 'other') {
                     if (!empty($alergie_other)) {
-                        // Najprv skontrolujeme, či takáto alergia už neexistuje
-                        $stmt = $pdo->prepare("SELECT id FROM alergie WHERE nazov = ?");
-                        $stmt->execute([$alergie_other]);
-                        $existingAllergy = $stmt->fetch(PDO::FETCH_ASSOC);
-                        
-                        if ($existingAllergy) {
-                            // Ak áno, použijeme jej ID
-                            $stmt = $pdo->prepare("INSERT INTO os_udaje_alergie (os_udaje_id, alergie_id) VALUES (?, ?)");
-                            $stmt->execute([$os_udaje_id, $existingAllergy['id']]);
-                        } else {
-                            // Ak nie, vytvoríme novú alergiu
-                            $stmt = $pdo->prepare("INSERT INTO alergie (nazov) VALUES (?)");
-                            $stmt->execute([$alergie_other]);
-                            $newAllergyId = $pdo->lastInsertId();
-                            
-                            $stmt = $pdo->prepare("INSERT INTO os_udaje_alergie (os_udaje_id, alergie_id) VALUES (?, ?)");
-                            $stmt->execute([$os_udaje_id, $newAllergyId]);
-                        }
+                        // Vytvorenie novej alergie
+                        $stmtNewAllergy = $pdo->prepare("
+                            INSERT INTO alergie (nazov)
+                            VALUES (?)
+                            ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+                        ");
+                        $stmtNewAllergy->execute([$alergie_other]);
+                        $alergiaId = $pdo->lastInsertId();
+                        $stmt->execute([$os_udaje_id, $alergiaId]);
                     }
                 } else {
-                    $stmt = $pdo->prepare("INSERT INTO os_udaje_alergie (os_udaje_id, alergie_id) VALUES (?, ?)");
-                    $stmt->execute([$os_udaje_id, $allergy]);
+                    $stmt->execute([$os_udaje_id, $alergia]);
                 }
             }
         }
 
-        header("Location: /thank-you.html");
+        // Commit transakcie
+        $pdo->commit();
+
+        // Poslanie potvrdzovacieho emailu
+        $userData = [
+            'meno' => $meno,
+            'priezvisko' => $priezvisko,
+            'mail' => $mail,
+            'mladez' => $mladez,
+            'ucastnik' => $linkType
+        ];
+        sendConfirmationEmail($userData);
+
+        // Presmerovanie na thank-you stránku
+        header("Location: thank-you.html");
         exit;
-    } catch (PDOException $e) {
-        die("Chyba pri ukladaní: " . $e->getMessage());
+
+    } catch (Exception $e) {
+        // Rollback v prípade chyby
+        $pdo->rollBack();
+        die("Chyba pri spracovaní registrácie: " . $e->getMessage());
     }
-} else {
-    die("Neplatná metóda požiadavky.");
 }
-
-// Pridaj do process_registration.php po úspešnej registrácii
-
-function sendConfirmationEmail($user) {
-    $to = $user['mail'];
-    $subject = 'Potvrdenie registrácie na kemp';
-    
-    $message = "
-    <html>
-    <head>
-      <title>Potvrdenie registrácie na kemp</title>
-    </head>
-    <body>
-      <h1>Ďakujeme za registráciu!</h1>
-      <p>Vážený/á {$user['meno']} {$user['priezvisko']},</p>
-      <p>Vaša registrácia na náš kemp bola úspešne prijatá.</p>
-      
-      <h2>Detaily vašej registrácie:</h2>
-      <ul>
-        <li><strong>Meno:</strong> {$user['meno']} {$user['priezvisko']}</li>
-        <li><strong>Mládež:</strong> {$user['mladez']}</li>
-        <li><strong>Typ účastníka:</strong> {$user['ucastnik']}</li>
-      </ul>
-      
-      <p>Ďalšie informácie o kempe vám budú zaslané bližšie k termínu konania.</p>
-      <p>S pozdravom,<br>Organizačný tím kempu</p>
-    </body>
-    </html>
-    ";
-    
-    $headers = "MIME-Version: 1.0" . "\r\n";
-    $headers .= "Content-type:text/html;charset=UTF-8" . "\r\n";
-    $headers .= 'From: kemp@example.com' . "\r\n";
-    
-    mail($to, $subject, $message, $headers);
-}
-
-// Získaj kompletné údaje o užívateľovi
-$stmt = $pdo->prepare("SELECT * FROM os_udaje WHERE id = ?");
-$stmt->execute([$os_udaje_id]);
-$userData = $stmt->fetch(PDO::FETCH_ASSOC);
-
-// Pošli potvrdzovací email
-sendConfirmationEmail($userData);
+?>
