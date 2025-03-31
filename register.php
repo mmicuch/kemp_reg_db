@@ -5,9 +5,10 @@ error_reporting(E_ALL);
 ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/error.log');
 
-require_once __DIR__ . '/includes/config.php';
-require_once __DIR__ . '/includes/csrf_utils.php';
-require_once __DIR__ . '/includes/rate_limiter.php';
+define('BASE_PATH', __DIR__);
+require_once 'includes/config.php';
+require_once 'includes/csrf_utils.php';
+require_once 'includes/rate-limiter.php';
 
 // Kontrola rate limitu
 $rateLimiter = new RateLimiter($pdo, 'registration_view', 30, 3600); // 30 zobrazení za hodinu

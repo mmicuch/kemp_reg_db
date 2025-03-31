@@ -1,14 +1,20 @@
 <?php
-if (!file_exists(__DIR__ . '/.env')) {
-    die("Please create .env file with database configuration");
+if (!defined('BASE_PATH')) {
+    define('BASE_PATH', realpath(__DIR__ . '/..'));
 }
 
-$dotenv = parse_ini_file(__DIR__ . '/.env');
+// Find .env file
+$envFile = BASE_PATH . '/.env';
+if (!file_exists($envFile)) {
+    die("Environment file not found. Please create a .env file");
+}
 
-$host = $dotenv['DB_HOST'];
-$db   = $dotenv['DB_NAME'];
-$user = $dotenv['DB_USER'];
-$pass = $dotenv['DB_PASS'];
+$dotenv = parse_ini_file($envFile);
+
+$host = $dotenv['DB_HOST'] ?? '';
+$db   = $dotenv['DB_NAME'] ?? '';
+$user = $dotenv['DB_USER'] ?? '';
+$pass = $dotenv['DB_PASS'] ?? '';
 $charset = 'utf8mb4';
 
 $dsn = "mysql:host=$host;dbname=$db;charset=$charset";
